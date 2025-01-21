@@ -3,10 +3,16 @@ use std::{
     collections::HashSet,
     env,
     fmt::Display,
-    io::{stdin, BufRead},
+    fs::File,
+    io::{stdin, BufRead, Read, Write},
 };
 
-use rand::{seq::SliceRandom, thread_rng};
+use clap::{arg, command, Parser};
+use rand::{
+    rngs::{StdRng, ThreadRng},
+    seq::SliceRandom,
+    thread_rng, Rng, SeedableRng,
+};
 
 #[derive(Clone)]
 struct Solitaire {
@@ -149,6 +155,31 @@ impl Card {
                 },
             ) => *value == other_value + 1 && *suit == other_suit,
             _ => false,
+        }
+    }
+
+    fn from_string(s: &str) -> Option<Self> {
+        let mut chs = s.chars();
+        let suit = match chs.next()?.to_ascii_lowercase() {
+            'r' => Suit::Red,
+            'b' => Suit::Black,
+            'g' => Suit::Green,
+            'f' => {
+                if chs.next()?.to_ascii_lowercase() == 'l' {
+                    return Some(Card::Flower);
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+        match chs.next()?.to_ascii_lowercase() {
+            value @ '1'..='9' => Some(Card::Numbered {
+                suit,
+                value: value as u8 - b'0',
+            }),
+            'd' => Some(Card::Dragon(suit)),
+            _ => None,
         }
     }
 }
@@ -398,11 +429,7 @@ impl Solitaire {
             A::StackCardFromCell(cell) => self.stack_card_from_cell(cell),
         }
 
-        loop {
-            if !self.do_automatic_action() {
-                break;
-            }
-        }
+        self.do_all_automatic_actions();
     }
 
     fn move_cards(&mut self, from: u8, to: u8, amount: u8) {
@@ -471,7 +498,10 @@ impl Solitaire {
             panic!("tried to store card from column {}, which is empty", column);
         };
         if self.card_cells.len() >= 3 {
-            panic!("tried to store card with no available card cells");
+            panic!(
+                "tried to store card from {} with no available card cells",
+                column
+            );
         }
         self.card_cells.push(CardCell::Used(card));
     }
@@ -496,7 +526,7 @@ impl Solitaire {
         let backup = self.clone();
         let (suit, value) = match self.columns[column as usize].pop() {
             Some(Card::Numbered { suit, value }) => (suit, value),
-            Some(Card::Dragon(_)) => panic!("tried to stack dragon"),
+            Some(Card::Dragon(_)) => panic!("tried to stack dragon from {}", column),
             None => panic!("tried to stack card from column {}, which is empty", column),
             _ => panic!("i have no clue what went wrong"),
         };
@@ -586,7 +616,7 @@ impl Solitaire {
                     .find(|stack| stack.suit == *suit)
                     .expect("all stacks must exist");
                 if *value <= automatic_stack_limit && stack.value + 1 == *value {
-                    action = Some(Action::StackCard(cell_idx as u8));
+                    action = Some(Action::StackCardFromCell(cell_idx as u8));
                     break;
                 }
             }
@@ -597,6 +627,14 @@ impl Solitaire {
             true
         } else {
             false
+        }
+    }
+
+    fn do_all_automatic_actions(&mut self) {
+        loop {
+            if !self.do_automatic_action() {
+                break;
+            }
         }
     }
 
@@ -638,49 +676,99 @@ impl Solitaire {
         }
     }
 
-    pub fn solve(&mut self) -> SolveResult {
-        match self._solve(&mut HashSet::new()) {
-            SolveResult::Solved(solution) => {
-                SolveResult::Solved(solution.iter().rev().cloned().collect())
-            }
-            SolveResult::Unsolvable => SolveResult::Unsolvable,
-        }
+    pub fn solve(&self) -> SolveResult {
+        self._solve(&mut self.clone(), &mut Vec::new(), &mut HashSet::new())
     }
 
-    fn _solve(&mut self, known_positions: &mut HashSet<String>) -> SolveResult {
-        let actions = self.get_possible_actions();
-        let hash = format!("{}", self);
-        if !known_positions.insert(hash) {
+    fn _solve(
+        &self,
+        current: &mut Self,
+        taken_actions: &mut Vec<Action>,
+        processed: &mut HashSet<String>,
+    ) -> SolveResult {
+        let hash = format!("{}", current);
+        if !processed.insert(hash) {
             return SolveResult::Unsolvable;
         }
 
-        if actions.is_empty() {
-            return if self.has_won() {
-                SolveResult::Solved(Vec::new())
-            } else {
-                SolveResult::Unsolvable
-            };
+        if current.has_won() {
+            return SolveResult::Solved(Vec::new());
         }
 
-        for action in actions {
-            let mut solitaire = self.clone();
-            solitaire.do_action(action);
-            if let SolveResult::Solved(mut solution) = solitaire._solve(known_positions) {
-                solution.push(action);
-                return SolveResult::Solved(solution);
+        let possible_actions = current.get_possible_actions();
+        let mut possible_actions = possible_actions
+            .iter()
+            .filter(|a| match a {
+                Action::Move {
+                    from,
+                    to: _,
+                    amount: 1,
+                } => !matches!(
+                    current.columns[*from as usize].last(),
+                    Some(Card::Dragon(_))
+                ),
+                _ => true,
+            })
+            .collect::<Vec<_>>();
+
+        possible_actions.sort_unstable_by_key(|a| match a {
+            Action::Move { from, to, amount } => {
+                let from_col = &current.columns[*from as usize];
+                let from = from_col.get(from_col.len() - *amount as usize);
+                let above = from_col.get((from_col.len() - *amount as usize).wrapping_sub(1));
+                let to = current.columns[*to as usize].last();
+                match (from, to, above) {
+                    (Some(from), _, Some(above)) => {
+                        if from.can_place_on(Some(above)) {
+                            15
+                        } else {
+                            1
+                        }
+                    }
+                    (Some(_), Some(_), None) => 1,
+                    (Some(_), None, None) => 15,
+                    (None, _, _) => 15,
+                }
+            }
+            Action::StoreCard(_) => 10,
+            Action::PlaceCard { cell: _, column: _ } => 7,
+            Action::StackCard(_) => 0,
+            Action::StackCardFromCell(_) => 0,
+            Action::CollectDragons(_) => 0,
+        });
+
+        // println!(
+        //     "Possible actions: {}",
+        //     possible_actions
+        //         .iter()
+        //         .map(|a| format!("{}", a))
+        //         .collect::<Vec<_>>()
+        //         .join(", ")
+        // );
+        for action in possible_actions {
+            // println!("{}", current);
+            // println!("    V Doing: {} V", action);
+            current.do_action(*action);
+            taken_actions.push(*action);
+            // println!("{}", current);
+            if let SolveResult::Solved(_) = self._solve(current, taken_actions, processed) {
+                return SolveResult::Solved(taken_actions.clone());
+            }
+            taken_actions.pop();
+            *current = self.clone();
+            for a in taken_actions.clone() {
+                current.do_action(a);
             }
         }
 
         SolveResult::Unsolvable
     }
-}
 
-impl Default for Solitaire {
-    fn default() -> Self {
-        let mut rng = rand::thread_rng();
-        let mut deck = Self::STANDARD_DECK;
-        deck.shuffle(&mut rng);
+    pub fn new() -> Self {
+        Self::from_deck(Self::STANDARD_DECK)
+    }
 
+    pub fn from_deck(deck: [Card; 40]) -> Self {
         let columns: Vec<Vec<_>> = deck
             .chunks(Self::STANDARD_DECK.len() / Self::COLUMNS)
             .map(|column| column.to_vec())
@@ -700,20 +788,56 @@ impl Default for Solitaire {
                 value: 0,
             },
         ];
-
-        let mut solitaire = Self {
+        Self {
             columns,
             card_cells,
             card_stacks,
-        };
+        }
+    }
 
-        loop {
-            if !solitaire.do_automatic_action() {
-                break;
+    fn with_rng(rng: &mut impl Rng) -> Self {
+        let mut deck = Self::STANDARD_DECK;
+        deck.shuffle(rng);
+        Self::from_deck(deck)
+    }
+
+    pub fn from_string(s: &str) -> Self {
+        let mut columns = vec![Vec::new(); 8];
+        let mut cards_strings = s.split(',');
+        for _ in 0..5 {
+            for col in columns.iter_mut() {
+                let card_str = cards_strings
+                    .next()
+                    .expect("Not enough cards in input string");
+                let card = Card::from_string(card_str)
+                    .unwrap_or_else(|| panic!("Invalid card string: {}", card_str));
+                col.push(card);
             }
         }
 
-        solitaire
+        Self {
+            columns,
+            ..Self::new()
+        }
+    }
+
+    fn stringify(&self) -> String {
+        let mut cards = Vec::with_capacity(Self::STANDARD_DECK.len());
+        for row in 0..5 {
+            for col in self.columns.iter() {
+                if let Some(card) = col.get(row) {
+                    cards.push(format!("{}", card));
+                }
+            }
+        }
+        cards.join(",")
+    }
+}
+
+impl Default for Solitaire {
+    fn default() -> Self {
+        let mut rng = thread_rng();
+        Self::with_rng(&mut rng)
     }
 }
 
@@ -735,44 +859,87 @@ impl Display for Solitaire {
         for i in 1..8 {
             write!(f, " {}|", i)?;
         }
-        writeln!(f, " 8")?;
+        write!(f, " 8")?;
 
         for row in 0.. {
-            let mut is_done = true;
+            let mut is_row_empty = true;
             for column in &self.columns {
                 if let Some(card) = column.get(row) {
+                    if is_row_empty {
+                        writeln!(f)?;
+                    }
                     write!(f, "{} ", card)?;
-                    is_done = false;
+                    is_row_empty = false;
                 } else {
+                    if row == 0 {
+                        writeln!(f)?;
+                    }
                     write!(f, "   ")?;
                 };
             }
 
-            if is_done {
+            if is_row_empty {
                 break;
             }
-
-            writeln!(f)?;
         }
 
         Ok(())
     }
 }
 
-fn main() {
-    let mut solitaire = Solitaire::default();
-    let args: Vec<String> = env::args().collect();
+/// Play, generate, and solve Shenzhen Solitaire boards!
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Args {
+    /// Where to save the generated board
+    #[arg(short, long)]
+    outfile: Option<String>,
 
-    if let Some(arg0) = args.get(1) {
-        if arg0 == "auto" {
-            if let SolveResult::Solved(solution) = solitaire.solve() {
-                for action in solution {
-                    println!("{}", solitaire);
-                    println!("Doing: {}", action);
-                    solitaire.do_action(action);
-                }
-            }
-            return;
+    /// File containing the board to use
+    #[arg(short, long)]
+    infile: Option<String>,
+
+    /// Seed to use when generating the board
+    #[arg(short, long)]
+    seed: Option<u64>,
+
+    /// Should the board be solved?
+    #[arg(short, long, default_value_t = false)]
+    auto: bool,
+}
+
+fn main() {
+    let args = Args::parse();
+    let mut solitaire = match (args.infile, args.seed) {
+        (Some(inpath), _) => {
+            let s = std::fs::read_to_string(&inpath)
+                .unwrap_or_else(|e| panic!("Couldn't read from file {}: {}", inpath, e));
+            Solitaire::from_string(&s)
+        }
+        (None, Some(seed)) => Solitaire::with_rng(&mut StdRng::seed_from_u64(seed)),
+        (None, None) => Solitaire::default(),
+    };
+
+    if let Some(outpath) = args.outfile {
+        let mut file = File::create(&outpath)
+            .unwrap_or_else(|e| panic!("Failed to open outfile {}: {}", outpath, e));
+        file.write_all(&[solitaire.stringify().as_bytes(), &[b'\n']].concat())
+            .expect("Failed to write to the file");
+    }
+    solitaire.do_all_automatic_actions();
+
+    if args.auto {
+        if let SolveResult::Solved(solution) = solitaire.solve() {
+            println!(
+                "Winning sequence: {}",
+                solution
+                    .iter()
+                    .map(|a| format!("{}", a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        } else {
+            println!("Unsolvable.");
         }
     }
 
