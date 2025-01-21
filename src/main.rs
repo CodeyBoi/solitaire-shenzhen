@@ -1,10 +1,12 @@
 use core::panic;
 use std::{
+    collections::HashSet,
+    env,
     fmt::Display,
     io::{stdin, BufRead},
 };
 
-use rand::seq::SliceRandom;
+use rand::{seq::SliceRandom, thread_rng};
 
 #[derive(Clone)]
 struct Solitaire {
@@ -135,6 +137,20 @@ impl Card {
             _ => false,
         }
     }
+
+    fn can_stack_on(&self, other: CardStack) -> bool {
+        use Card as C;
+        match (self, other) {
+            (
+                C::Numbered { suit, value },
+                CardStack {
+                    suit: other_suit,
+                    value: other_value,
+                },
+            ) => *value == other_value + 1 && *suit == other_suit,
+            _ => false,
+        }
+    }
 }
 
 impl Display for Card {
@@ -149,6 +165,11 @@ impl Display for Card {
         };
         write!(f, "{}{}", suit, value)
     }
+}
+
+enum SolveResult {
+    Solved(Vec<Action>),
+    Unsolvable,
 }
 
 impl Solitaire {
@@ -327,9 +348,9 @@ impl Solitaire {
                 actions.push(Action::StoreCard(col_idx));
             }
 
-            if let Some(&Card::Numbered { suit, value }) = column.last() {
+            if let Some(card @ &Card::Numbered { suit: _, value: _ }) = column.last() {
                 for stack in &self.card_stacks {
-                    if suit == stack.suit && value == stack.value + 1 {
+                    if card.can_stack_on(*stack) {
                         actions.push(Action::StackCard(col_idx));
                     }
                 }
@@ -349,11 +370,9 @@ impl Solitaire {
                     });
                 }
 
-                if let &Card::Numbered { suit, value } = card {
-                    for stack in &self.card_stacks {
-                        if suit == stack.suit && value == stack.value + 1 {
-                            actions.push(Action::StackCardFromCell(cell_idx as u8));
-                        }
+                for stack in &self.card_stacks {
+                    if card.can_stack_on(*stack) {
+                        actions.push(Action::StackCardFromCell(cell_idx as u8));
                     }
                 }
             }
@@ -474,6 +493,7 @@ impl Solitaire {
     }
 
     fn stack_card(&mut self, column: u8) {
+        let backup = self.clone();
         let (suit, value) = match self.columns[column as usize].pop() {
             Some(Card::Numbered { suit, value }) => (suit, value),
             Some(Card::Dragon(_)) => panic!("tried to stack dragon"),
@@ -487,7 +507,8 @@ impl Solitaire {
             .expect("card stack missing");
         if stack.value + 1 != value {
             panic!(
-                "tried to stack {} on {}",
+                "{}\ntried to stack {} on {}",
+                backup,
                 Card::Numbered { suit, value },
                 stack
             );
@@ -616,6 +637,42 @@ impl Solitaire {
             _ => None,
         }
     }
+
+    pub fn solve(&mut self) -> SolveResult {
+        match self._solve(&mut HashSet::new()) {
+            SolveResult::Solved(solution) => {
+                SolveResult::Solved(solution.iter().rev().cloned().collect())
+            }
+            SolveResult::Unsolvable => SolveResult::Unsolvable,
+        }
+    }
+
+    fn _solve(&mut self, known_positions: &mut HashSet<String>) -> SolveResult {
+        let actions = self.get_possible_actions();
+        let hash = format!("{}", self);
+        if !known_positions.insert(hash) {
+            return SolveResult::Unsolvable;
+        }
+
+        if actions.is_empty() {
+            return if self.has_won() {
+                SolveResult::Solved(Vec::new())
+            } else {
+                SolveResult::Unsolvable
+            };
+        }
+
+        for action in actions {
+            let mut solitaire = self.clone();
+            solitaire.do_action(action);
+            if let SolveResult::Solved(mut solution) = solitaire._solve(known_positions) {
+                solution.push(action);
+                return SolveResult::Solved(solution);
+            }
+        }
+
+        SolveResult::Unsolvable
+    }
 }
 
 impl Default for Solitaire {
@@ -704,6 +761,20 @@ impl Display for Solitaire {
 
 fn main() {
     let mut solitaire = Solitaire::default();
+    let args: Vec<String> = env::args().collect();
+
+    if let Some(arg0) = args.get(1) {
+        if arg0 == "auto" {
+            if let SolveResult::Solved(solution) = solitaire.solve() {
+                for action in solution {
+                    println!("{}", solitaire);
+                    println!("Doing: {}", action);
+                    solitaire.do_action(action);
+                }
+            }
+            return;
+        }
+    }
 
     loop {
         let actions = solitaire.get_possible_actions();
