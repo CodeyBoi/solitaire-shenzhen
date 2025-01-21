@@ -1,6 +1,6 @@
 use core::panic;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     fmt::Display,
     fs::File,
@@ -676,41 +676,44 @@ impl Solitaire {
         }
     }
 
-    pub fn solve(&self) -> SolveResult {
-        self._solve(&mut self.clone(), &mut Vec::new(), &mut HashSet::new())
+    pub fn solve(&self) -> Option<Vec<Action>> {
+        let mut solution = None;
+        self._solve(
+            &mut self.clone(),
+            &mut solution,
+            &mut Vec::new(),
+            &mut HashMap::new(),
+        );
+        solution
     }
 
     fn _solve(
         &self,
         current: &mut Self,
+        current_solution: &mut Option<Vec<Action>>,
         taken_actions: &mut Vec<Action>,
-        processed: &mut HashSet<String>,
-    ) -> SolveResult {
-        let hash = format!("{}", current);
-        if !processed.insert(hash) {
-            return SolveResult::Unsolvable;
+        processed: &mut HashMap<String, usize>,
+    ) -> bool {
+        if let Some(current_solution) = current_solution {
+            if current_solution.len() >= taken_actions.len() {
+                return false;
+            }
         }
+
+        let hash = format!("{}", current);
+        if processed
+            .get(&hash)
+            .is_some_and(|&l| l < taken_actions.len())
+        {
+            return false;
+        }
+        processed.insert(hash, taken_actions.len());
 
         if current.has_won() {
-            return SolveResult::Solved(Vec::new());
+            return true;
         }
 
-        let possible_actions = current.get_possible_actions();
-        let mut possible_actions = possible_actions
-            .iter()
-            .filter(|a| match a {
-                Action::Move {
-                    from,
-                    to: _,
-                    amount: 1,
-                } => !matches!(
-                    current.columns[*from as usize].last(),
-                    Some(Card::Dragon(_))
-                ),
-                _ => true,
-            })
-            .collect::<Vec<_>>();
-
+        let mut possible_actions = current.get_possible_actions();
         possible_actions.sort_unstable_by_key(|a| match a {
             Action::Move { from, to, amount } => {
                 let from_col = &current.columns[*from as usize];
@@ -745,14 +748,15 @@ impl Solitaire {
         //         .collect::<Vec<_>>()
         //         .join(", ")
         // );
-        for action in possible_actions {
+        for action in &possible_actions {
             // println!("{}", current);
             // println!("    V Doing: {} V", action);
             current.do_action(*action);
             taken_actions.push(*action);
             // println!("{}", current);
-            if let SolveResult::Solved(_) = self._solve(current, taken_actions, processed) {
-                return SolveResult::Solved(taken_actions.clone());
+            if self._solve(current, current_solution, taken_actions, processed) {
+                *current_solution = Some(taken_actions.clone());
+                println!("Found solution in {} steps!", taken_actions.len());
             }
             taken_actions.pop();
             *current = self.clone();
@@ -761,7 +765,7 @@ impl Solitaire {
             }
         }
 
-        SolveResult::Unsolvable
+        false
     }
 
     pub fn new() -> Self {
@@ -929,7 +933,7 @@ fn main() {
     solitaire.do_all_automatic_actions();
 
     if args.auto {
-        if let SolveResult::Solved(solution) = solitaire.solve() {
+        if let Some(solution) = solitaire.solve() {
             println!(
                 "Winning sequence: {}",
                 solution
