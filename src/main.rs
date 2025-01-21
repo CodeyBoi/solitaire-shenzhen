@@ -579,7 +579,8 @@ impl Solitaire {
             .map(|stack| stack.value)
             .min()
             .expect("card stack vector cannot be empty")
-            + 2
+            .max(1)
+            + 1
     }
 
     fn do_automatic_action(&mut self) -> bool {
@@ -695,7 +696,7 @@ impl Solitaire {
         processed: &mut HashMap<String, usize>,
     ) -> bool {
         if let Some(current_solution) = current_solution {
-            if current_solution.len() >= taken_actions.len() {
+            if current_solution.len() <= taken_actions.len() {
                 return false;
             }
         }
@@ -733,7 +734,7 @@ impl Solitaire {
                     (None, _, _) => 15,
                 }
             }
-            Action::StoreCard(_) => 10,
+            Action::StoreCard(_) => 15,
             Action::PlaceCard { cell: _, column: _ } => 7,
             Action::StackCard(_) => 0,
             Action::StackCardFromCell(_) => 0,
@@ -756,7 +757,17 @@ impl Solitaire {
             // println!("{}", current);
             if self._solve(current, current_solution, taken_actions, processed) {
                 *current_solution = Some(taken_actions.clone());
-                println!("Found solution in {} steps!", taken_actions.len());
+                println!(
+                    "{} steps: {}",
+                    taken_actions.len(),
+                    taken_actions
+                        .iter()
+                        .map(|a| format!("{}", a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                taken_actions.pop();
+                return false;
             }
             taken_actions.pop();
             *current = self.clone();
@@ -807,7 +818,7 @@ impl Solitaire {
 
     pub fn from_string(s: &str) -> Self {
         let mut columns = vec![Vec::new(); 8];
-        let mut cards_strings = s.split(',');
+        let mut cards_strings = s.split(&[',', '\n', ' ']).filter(|s| !s.trim().is_empty());
         for _ in 0..5 {
             for col in columns.iter_mut() {
                 let card_str = cards_strings
