@@ -1,18 +1,13 @@
 use core::panic;
 use std::{
-    collections::{HashMap, HashSet},
-    env,
+    collections::HashMap,
     fmt::Display,
     fs::File,
-    io::{stdin, BufRead, Read, Write},
+    io::{self, stdin, BufRead, Write},
 };
 
 use clap::{arg, command, Parser};
-use rand::{
-    rngs::{StdRng, ThreadRng},
-    seq::SliceRandom,
-    thread_rng, Rng, SeedableRng,
-};
+use rand::{rngs::StdRng, seq::SliceRandom, thread_rng, Rng, SeedableRng};
 
 #[derive(Clone)]
 struct Solitaire {
@@ -196,11 +191,6 @@ impl Display for Card {
         };
         write!(f, "{}{}", suit, value)
     }
-}
-
-enum SolveResult {
-    Solved(Vec<Action>),
-    Unsolvable,
 }
 
 impl Solitaire {
@@ -847,6 +837,10 @@ impl Solitaire {
         }
         cards.join(",")
     }
+
+    fn save_to_file(&self, file: &mut File) -> io::Result<()> {
+        file.write_all(&[self.stringify().as_bytes(), &[b'\n']].concat())
+    }
 }
 
 impl Default for Solitaire {
@@ -878,22 +872,22 @@ impl Display for Solitaire {
 
         for row in 0.. {
             let mut is_row_empty = true;
-            for column in &self.columns {
+            for (col_idx, column) in self.columns.iter().enumerate() {
                 if let Some(card) = column.get(row) {
                     if is_row_empty {
-                        writeln!(f)?;
+                        write!(f, "\n{}", "   ".repeat(col_idx))?;
                     }
                     write!(f, "{} ", card)?;
                     is_row_empty = false;
                 } else {
-                    if row == 0 {
-                        writeln!(f)?;
-                    }
                     write!(f, "   ")?;
                 };
             }
 
             if is_row_empty {
+                if row == 0 {
+                    writeln!(f)?;
+                }
                 break;
             }
         }
@@ -938,8 +932,9 @@ fn main() {
     if let Some(outpath) = args.outfile {
         let mut file = File::create(&outpath)
             .unwrap_or_else(|e| panic!("Failed to open outfile {}: {}", outpath, e));
-        file.write_all(&[solitaire.stringify().as_bytes(), &[b'\n']].concat())
-            .expect("Failed to write to the file");
+        solitaire
+            .save_to_file(&mut file)
+            .expect("Failed to save solitaire board");
     }
     solitaire.do_all_automatic_actions();
 
